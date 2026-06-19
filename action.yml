@@ -24,7 +24,7 @@ inputs:
     description: >
       Port for the Cloud SQL Proxy HTTP health check server (--health-check flag).
       When set, readiness is polled via curl on this port.
-      Leave empty (default) to use nc on the SQL port instead — recommended on
+      Leave empty (default) to check the SQL port directly via bash /dev/tcp — recommended on
       self-hosted runners where port 9090 may be occupied by other services.
     required: false
     default: ''
@@ -48,8 +48,7 @@ runs:
         fi
 
         # Wait until proxy is ready.
-        # Default: check the SQL port directly with nc — avoids conflicts on self-hosted runners
-        # where port 9090 is often occupied (Prometheus, cAdvisor, etc.).
+        # Default: check the SQL port directly via bash /dev/tcp (no external binary required).
         # Set health_check_port to use the HTTP health endpoint instead.
         isready=1
         for i in {1..10}; do
@@ -60,7 +59,7 @@ runs:
               break
             fi
           else
-            if nc -z localhost ${{ inputs.port }}; then
+            if (echo > /dev/tcp/localhost/${{ inputs.port }}) 2>/dev/null; then
               isready=0
               break
             fi
