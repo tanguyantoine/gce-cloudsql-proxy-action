@@ -24,8 +24,8 @@ inputs:
     description: >
       Port for the Cloud SQL Proxy HTTP health check server (--health-check flag).
       When set, readiness is polled via curl on this port.
-      Leave empty (default) to check the SQL port directly via bash /dev/tcp — recommended on
-      self-hosted runners where port 9090 may be occupied by other services.
+      Leave empty (default) to watch the proxy log output instead — avoids any
+      TCP loopback connectivity issues on self-hosted runners.
     required: false
     default: ''
 
@@ -42,14 +42,13 @@ runs:
         HEALTH_CHECK_PORT="${{ inputs.health_check_port }}"
 
         if [[ -n "$HEALTH_CHECK_PORT" ]]; then
-          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --health-check --http-port "$HEALTH_CHECK_PORT" --quitquitquit &
+          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --health-check --http-port "$HEALTH_CHECK_PORT" --quitquitquit > /tmp/cloud_sql_proxy.log 2>&1 &
         else
-          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --quitquitquit &
+          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --quitquitquit > /tmp/cloud_sql_proxy.log 2>&1 &
         fi
 
-        # Wait until proxy is ready.
-        # Default: check the SQL port directly via bash /dev/tcp (no external binary required).
-        # Set health_check_port to use the HTTP health endpoint instead.
+        # Wait until proxy is ready by tailing its log output.
+        # Avoids any TCP loopback check which can hang in some k8s container environments.
         isready=1
         for i in {1..10}; do
           echo "Wait for connections to be ready ... $i/10"
@@ -59,7 +58,7 @@ runs:
               break
             fi
           else
-            if (echo > /dev/tcp/localhost/${{ inputs.port }}) 2>/dev/null; then
+            if grep -q "ready for new connections" /tmp/cloud_sql_proxy.log 2>/dev/null; then
               isready=0
               break
             fi
@@ -67,4 +66,5 @@ runs:
           sleep 2
         done
 
+        cat /tmp/cloud_sql_proxy.log
         exit $isready
