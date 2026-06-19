@@ -20,6 +20,14 @@ inputs:
     description: 'CloudSQL Proxy Version'
     required: false
     default: v2.5.0
+  health_check_port:
+    description: >
+      Port for the Cloud SQL Proxy HTTP health check server (--health-check flag).
+      When set, readiness is polled via curl on this port.
+      Leave empty (default) to use nc on the SQL port instead — recommended on
+      self-hosted runners where port 9090 may be occupied by other services.
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -31,18 +39,31 @@ runs:
         wget -q https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.5.0/cloud-sql-proxy.linux.amd64 -O cloud_sql_proxy
         chmod +x cloud_sql_proxy
 
-        # Start Cloud SQL Proxy
-        ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --quitquitquit &
+        HEALTH_CHECK_PORT="${{ inputs.health_check_port }}"
 
-        # Wait until proxy is ready by checking the SQL port directly.
-        # Avoid using the health check endpoint (:9090) which conflicts with other
-        # services commonly running on self-hosted runners (e.g. Prometheus exporters).
+        if [[ -n "$HEALTH_CHECK_PORT" ]]; then
+          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --health-check --http-port "$HEALTH_CHECK_PORT" --quitquitquit &
+        else
+          ./cloud_sql_proxy ${{ inputs.instance }} --address 0.0.0.0 --port ${{ inputs.port }} --quitquitquit &
+        fi
+
+        # Wait until proxy is ready.
+        # Default: check the SQL port directly with nc — avoids conflicts on self-hosted runners
+        # where port 9090 is often occupied (Prometheus, cAdvisor, etc.).
+        # Set health_check_port to use the HTTP health endpoint instead.
         isready=1
         for i in {1..10}; do
           echo "Wait for connections to be ready ... $i/10"
-          if nc -z localhost ${{ inputs.port }}; then
-            isready=0
-            break
+          if [[ -n "$HEALTH_CHECK_PORT" ]]; then
+            if curl -s --max-time 5 -X GET "http://localhost:${HEALTH_CHECK_PORT}/readiness" >/dev/null; then
+              isready=0
+              break
+            fi
+          else
+            if nc -z localhost ${{ inputs.port }}; then
+              isready=0
+              break
+            fi
           fi
           sleep 2
         done
